@@ -19,6 +19,6 @@
     "icon": ["icons/icon.png", "icons/icon.icns"],
     "category": "DeveloperTool",
     "shortDescription": "轻量 MySQL 数据库工作台",
-    "macOS": { "minimumSystemVersion": "13.0" }
+    "macOS": { "minimumSystemVersion": "13.0", "signingIdentity": "-" }
   }
 }

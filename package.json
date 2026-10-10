@@ -6,11 +6,13 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vue-tsc --noEmit && vite build",
+    "build:app": "tauri build --bundles app",
+    "build:dmg": "sh scripts/build-macos.sh",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
     "test:ui": "playwright test",
     "tauri": "tauri",
-    "release:mac": "sh scripts/build-macos.sh"
+    "release:mac": "npm run build:dmg"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.0",

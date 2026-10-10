@@ -4,6 +4,7 @@ pub mod engine;
 #[cfg(target_os = "macos")]
 mod macos;
 pub mod model;
+pub mod schema;
 pub mod script;
 pub mod state;
 
@@ -29,6 +30,9 @@ pub fn run() {
             commands::list_databases,
             commands::list_objects,
             commands::describe_table,
+            commands::schema_definition,
+            commands::preview_schema_change,
+            commands::apply_schema_change,
             commands::open_session,
             commands::close_session,
             commands::execute_script,

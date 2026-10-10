@@ -1,7 +1,7 @@
 use crate::{
     database, engine,
     model::*,
-    script,
+    schema, script,
     state::{AppState, Execution, Session},
 };
 use mysql_async::{prelude::Queryable, Conn, Pool};
@@ -232,6 +232,38 @@ pub async fn describe_table(
         &mut pooled(&state, &connection_id).await?,
         &database,
         &table,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn schema_definition(
+    state: State<'_, AppState>,
+    target: SchemaTarget,
+) -> Result<SchemaDefinition> {
+    schema::definition(&mut pooled(&state, &target.connection_id).await?, &target).await
+}
+#[tauri::command]
+pub async fn preview_schema_change(
+    state: State<'_, AppState>,
+    request: SchemaChangeRequest,
+) -> Result<String> {
+    schema::preview(
+        &mut pooled(&state, &request.target.connection_id).await?,
+        &request,
+    )
+    .await
+}
+#[tauri::command]
+pub async fn apply_schema_change(
+    state: State<'_, AppState>,
+    request: SchemaChangeRequest,
+    expected_sql: String,
+) -> Result<()> {
+    schema::apply(
+        &mut pooled(&state, &request.target.connection_id).await?,
+        &request,
+        &expected_sql,
     )
     .await
 }

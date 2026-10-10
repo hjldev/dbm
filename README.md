@@ -17,10 +17,12 @@ npm run tauri -- dev
 
 ```sh
 npm run build
+npm run build:app
+npm run build:dmg
 npm run release:mac
 ```
 
-`npm run release:mac` 使用原生磁盘映像工具生成包含 Applications 快捷方式的安装包，不需要 Finder 自动化授权。`npm run tauri -- build` 也可使用 Tauri 默认打包，但其 DMG 美化步骤需要 Finder 自动化权限。
+`npm run build` 生成前端静态资源；`npm run build:app` 构建 macOS `.app`；`npm run build:dmg` 构建应用并使用原生磁盘映像工具生成包含 Applications 快捷方式的 DMG，不需要 Finder 自动化授权。`npm run release:mac` 是 `build:dmg` 的兼容入口。`npm run tauri -- build` 也可使用 Tauri 默认打包，但其 DMG 美化步骤需要 Finder 自动化权限。
 
 本机产物位于 `src-tauri/target/release/bundle/macos/DBM.app` 和 `src-tauri/target/release/bundle/dmg/`。当前包采用本地 ad-hoc 签名用于安装验证，尚未配置 Developer ID 签名、公证或自动更新。
 
@@ -31,6 +33,7 @@ npm run release:mac
 3. 新建 SQL 标签，执行光标所在语句、选中脚本或整个脚本；支持 `.sql` 文件打开和保存、语法高亮及库表字段补全。每个 SQL 标签使用独立会话，保留 `USE`、会话变量和显式事务。
 4. 打开表数据，使用分页、排序和条件筛选。新增、编辑、删除先进入待提交状态，可撤销；保存时以一笔事务提交整批变更。更新和删除会检查原始行，发现并发修改则整批回滚。
 5. SQL 结果可导出已保留的预览；表数据可按当前筛选导出全表。全表 CSV 导出通过 Rust 流式写入，显示进度并支持取消。
+6. 在“字段”或“索引”页点击“新增字段 / 新增索引”，或使用行内的“修改 / 删除”。新增与修改可填写名称和完整定义；索引可选择主键、唯一、普通、全文或空间类型。定义保留字符集、默认表达式、生成字段、前缀长度、排序及索引选项。先预览 SQL，再执行；删除还需确认删除对象，删除字段会移除此字段的全部数据。完成后自动刷新结构和数据。存在待提交数据时需先保存或撤销，视图结构使用 SQL 修改。结构修改立即生效，不能通过数据页“撤销”回滚；服务端约束和权限错误会保留编辑内容，检测到表结构变化时需刷新后重试。
 
 图形编辑需要 InnoDB 表及主键或非空唯一键；视图、无可用唯一键的表和其他引擎保持只读。生成字段不可修改。SQL 可直接执行用户有权限的其他操作。
 
@@ -64,6 +67,8 @@ npm run test:ui
 cargo test --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
+
+字段与索引的真实数据库测试可通过 `DBM_SCHEMA_TEST_HOST`、`DBM_SCHEMA_TEST_PORT`、`DBM_SCHEMA_TEST_USER`、`DBM_SCHEMA_TEST_PASSWORD` 配置本地 MySQL，再运行 `cargo test --manifest-path src-tauri/Cargo.toml --test schema_integration -- --ignored`。账号需有建库权限；测试创建随机名称的独立数据库，结束后清理，不依赖其他 fixture 或已有业务表。
 
 界面自动化使用本机 Google Chrome；完整结果与原生操作记录见 [VALIDATION.md](VALIDATION.md)。旧版 Keychain 兼容测试可单独运行 `cargo test --manifest-path src-tauri/Cargo.toml --test keychain_integration -- --ignored`，只创建并删除自己的随机测试条目。
 

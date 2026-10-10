@@ -598,7 +598,13 @@ async fn authentication_tls_and_permissions_are_enforced() {
         // The fixture certificate is deliberately untrusted without its CA.
         let verified_tls = database::options(&tls, &password(), Some("dbm_test")).unwrap();
         assert!(database::new_connection(verified_tls).await.is_err());
-        tls.ca_pem = Some(include_str!("../../tests/fixtures/tls/ca.pem").into());
+        tls.ca_pem = Some(
+            std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../tests/fixtures/tls/ca.pem"),
+            )
+            .expect("the opt-in TLS test requires tests/fixtures/tls/ca.pem"),
+        );
         let verified_tls = database::options(&tls, &password(), Some("dbm_test")).unwrap();
         let mut encrypted = database::new_connection(verified_tls).await.unwrap();
         let cipher: Option<(String, String)> = encrypted

@@ -228,6 +228,14 @@ h1, h2, h3, p { margin: 0; }
 .password-modal, .settings-modal { width: 420px; }
 .password-modal .helper:first-child { margin-top: 0; margin-bottom: 15px; }
 .cell-modal { width: 540px; }
+.schema-modal { width: 680px; }
+.button.delete-schema { color: var(--danger); }
+.schema-delete-summary pre { margin: 12px 0; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; font: 11px/1.8 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.schema-form { padding: 0; margin: 0; border: 0; min-width: 0; }
+.schema-loading { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+.schema-input { width: 100%; min-height: 130px; resize: vertical; font-size: 12px; line-height: 1.8; }
+.schema-preview { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.schema-preview pre { margin: 10px 0; padding: 14px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); font: 11px/1.8 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .segmented { display: inline-flex; gap: 2px; padding: 3px; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; margin-bottom: 14px; }
 .segmented button { background: transparent; border: 0; padding: 5px 12px; border-radius: 3px; font-size: 11px; color: var(--muted); }
 .segmented button.active { background: var(--panel); color: var(--accent); box-shadow: 0 1px 3px #0001; }

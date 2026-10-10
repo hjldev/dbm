@@ -144,6 +144,8 @@ async fn describe_with<Q: Queryable>(
     table: &str,
 ) -> Result<TableInfo> {
     let qualified = qualified_name(database, table)?;
+    conn.query_drop("SET SESSION sql_quote_show_create = 1")
+        .await?;
     let object: Option<(String, Option<String>)> = conn.exec_first(
         "SELECT TABLE_TYPE,ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", (database, table),
     ).await?;

@@ -140,6 +140,7 @@ export const useDbm = defineStore('dbm', () => {
   }
   async function canDiscard(tab: WorkspaceTab) {
     if (tab.busy) { notify('操作仍在进行，请先取消并等待结束', true); return false }
+    if (tab.kind === 'table' && tab.schemaDirty && !await ask('放弃未保存的结构变更？', `${tab.title} 中的字段或索引修改尚未执行。`, '放弃变更', true)) return false
     if (tab.kind === 'table' && tab.dirty && !await ask('放弃未保存的数据变更？', `${tab.title} 中的新增、修改与删除尚未提交。`, '放弃变更', true)) return false
     if (tab.kind === 'sql' && tab.source !== tab.savedSource && !await ask('关闭未保存的 SQL？', `${tab.title} 中的 SQL 尚未保存到文件。`, '关闭查询', true)) return false
     return true

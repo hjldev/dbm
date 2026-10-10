@@ -230,6 +230,40 @@ pub struct TableInfo {
     pub key_columns: Vec<String>,
     pub editable: bool,
 }
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SchemaAction {
+    Add,
+    #[default]
+    Modify,
+    Drop,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaTarget {
+    pub connection_id: String,
+    pub database: String,
+    pub table: String,
+    pub kind: String,
+    #[serde(default)]
+    pub action: SchemaAction,
+    pub original_name: String,
+    pub expected_create_sql: String,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaDefinition {
+    pub name: String,
+    /// Field type and attributes, or index key parts and options, without the name.
+    pub definition: String,
+    pub index_kind: Option<String>,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaChangeRequest {
+    pub target: SchemaTarget,
+    pub value: SchemaDefinition,
+}
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Filter {

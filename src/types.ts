@@ -13,6 +13,10 @@ export interface FieldInfo { name: string; dataType: string; nullable: boolean; 
 export interface IndexInfo { name: string; unique: boolean; columns: string[] }
 export interface ForeignKeyInfo { name: string; column: string; referencedSchema: string; referencedTable: string; referencedColumn: string }
 export interface TableInfo { fields: FieldInfo[]; indexes: IndexInfo[]; foreignKeys: ForeignKeyInfo[]; createSql: string; engine: string | null; keyColumns: string[]; editable: boolean }
+export type SchemaAction = 'add' | 'modify' | 'drop'
+export interface SchemaTarget { connectionId: string; database: string; table: string; kind: 'field' | 'index'; action: SchemaAction; originalName: string; expectedCreateSql: string }
+export interface SchemaDefinition { name: string; definition: string; indexKind: 'primary' | 'unique' | 'index' | 'fulltext' | 'spatial' | null }
+export interface SchemaChangeRequest { target: SchemaTarget; value: SchemaDefinition }
 export interface Filter { column: string; operator: string; value: CellValue | null }
 export interface PageRequest { connectionId: string; database: string; table: string; page: number; pageSize: number; sortColumn: string | null; sortDesc: boolean; filters: Filter[] }
 export interface PageResult { result: ResultSet; hasNext: boolean }
@@ -21,5 +25,5 @@ export interface ChangeRequest { connectionId: string; database: string; table: 
 export interface ExportProgress { executionId: string; rows: number }
 export interface FileContent { name: string; content: string }
 export interface SqlTab { id: string; kind: 'sql'; connectionId: string; database: string | null; title: string; source: string; savedSource: string; fileName: string | null; sessionId: string | null; inTransaction: boolean; sessionValid: boolean; busy: boolean; executionId: string | null; outcomes: StatementOutcome[]; selectedOutcome: number; selectedResult: number; progress: string; report: ExecutionReport | null }
-export interface TableTab { id: string; kind: 'table'; connectionId: string; database: string; table: string; title: string; dirty: boolean; busy: boolean }
+export interface TableTab { id: string; kind: 'table'; connectionId: string; database: string; table: string; title: string; dirty: boolean; schemaDirty?: boolean; busy: boolean }
 export type WorkspaceTab = SqlTab | TableTab
