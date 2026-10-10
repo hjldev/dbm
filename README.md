@@ -17,12 +17,12 @@ npm run tauri -- dev
 
 ```sh
 npm run build
-npm run build:app
-npm run build:dmg
-npm run release:mac
+npm run tauri -- build
 ```
 
-`npm run build` 生成前端静态资源；`npm run build:app` 构建 macOS `.app`；`npm run build:dmg` 构建应用并使用原生磁盘映像工具生成包含 Applications 快捷方式的 DMG，不需要 Finder 自动化授权。`npm run release:mac` 是 `build:dmg` 的兼容入口。`npm run tauri -- build` 也可使用 Tauri 默认打包，但其 DMG 美化步骤需要 Finder 自动化权限。
+`npm run build` 仅生成前端静态资源；`npm run tauri -- build` 使用 Tauri 标准流程，自动构建前端、原生应用并生成 `.app` 和 `.dmg`。`npm run release:mac` 是同等打包入口；如需单独指定产物，可使用 `npm run build:app` 或 `npm run build:dmg`，两者均直接调用 Tauri。
+
+如果 DMG 步骤提示未获授权向 Finder 发送 Apple 事件，可授权当前终端控制 Finder，或使用 `CI=true npm run tauri -- build` 通过 Tauri 原生 CI 模式跳过安装窗口美化。
 
 本机产物位于 `src-tauri/target/release/bundle/macos/DBM.app` 和 `src-tauri/target/release/bundle/dmg/`。当前包采用本地 ad-hoc 签名用于安装验证，尚未配置 Developer ID 签名、公证或自动更新。
 

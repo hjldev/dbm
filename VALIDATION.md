@@ -25,7 +25,7 @@ MySQL 测试覆盖认证失败、TLS 信任与主机名校验、权限不足、�
 
 按本次要求直接连接本地 MySQL 9.7.2，在随机命名的独立测试库中验证字段重命名与类型修改、字符集/排序规则/默认值/注释保留、时间默认值与 ON UPDATE、生成字段及依赖拒绝、自增属性、索引重命名、前缀/降序/注释/不可见选项保留、唯一索引重建失败后原索引保留、表达式索引修改、表结构与预览冲突、视图限制，以及 ANSI_QUOTES / NO_BACKSLASH_ESCAPES。测试库在成功或断言失败后均自动清理。此前的 Docker MySQL 8.0 / 8.4 fixture 未重跑。原有忽略的 TLS 测试改为运行时读取 CA，避免缺失 fixture 文件导致普通 Rust 测试和 Clippy 无法编译。
 
-打包入口已恢复：新增 `build:app` / `build:dmg`，保留 `release:mac`，补回 `scripts/build-macos.sh`。完整执行 `npm run release:mac` 成功，应用包 ad-hoc 签名验证和 DMG 校验均通过，生成 `DBM_0.1.0_aarch64.dmg`。脚本使用独立临时目录，在校验成功后替换安装包，并自动清理临时文件。
+打包入口已简化为 Tauri 标准流程：`npm run tauri -- build` 和 `npm run release:mac` 均直接调用 `tauri build`，自动构建前端并生成 `.app` 和 `.dmg`；`build:app` / `build:dmg` 通过 `--bundles` 指定产物。额外的 Shell 打包脚本已移除。本次标准命令的前端与 `.app` 构建成功，DMG 美化因本机拒绝向 Finder 发送 Apple 事件（-1743）失败；使用 `CI=true npm run tauri -- bundle --bundles dmg --verbose` 的 Tauri 原生 CI 模式后，DMG 成功生成。此前生成的安装包已通过应用包 ad-hoc 签名验证和 DMG 校验。
 
 字段与索引新增、删除已补齐并验证：14 项 Chrome 界面测试、14 项前端测试、28 项 Rust 单元测试、6 项配置测试、生产构建及全目标 Clippy 均通过。界面覆盖新增字段/索引、删除前 SQL 预览及确认勾选、取消删除、执行后刷新、过期预览保留输入，以及待提交数据和视图限制。本地 MySQL 9.7.2 的独立测试库验证了新增字段的默认值/可空/注释、转义名称、普通/唯一/复合/表达式索引、删除字段/索引/主键、重复名称及结构冲突拒绝、生成列和外键依赖删除失败后结构保留；测试库已自动清理。
 
@@ -53,7 +53,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 sh scripts/test-mysql.sh
 cargo test --manifest-path src-tauri/Cargo.toml --test keychain_integration -- --ignored
-npm run release:mac
+npm run tauri -- build
 ```
 
 验收完成后，隔离的 MySQL 测试容器已停止并移除。应用内保留的“DBM 本地验收”连接仅指向该测试环境，未保存密码；可删除或运行测试脚本重建环境。
