@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DBM",
+  "version": "0.1.0",
+  "identifier": "dev.dbm.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "DBM", "width": 1320, "height": 860, "minWidth": 940, "minHeight": 640, "backgroundColor": "#111318" }],
+    "security": { "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; font-src 'self'; script-src 'self'" }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": ["icons/icon.png", "icons/icon.icns"],
+    "category": "DeveloperTool",
+    "shortDescription": "轻量 MySQL 数据库工作台",
+    "macOS": { "minimumSystemVersion": "13.0" }
+  }
+}
