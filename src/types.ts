@@ -7,7 +7,7 @@ export interface ColumnMeta { name: string; dataType: string; nullable: boolean;
 export interface ResultSet { columns: ColumnMeta[]; rows: CellValue[][]; totalRows: number; truncated: boolean }
 export interface StatementOutcome { index: number; sql: string; line: number; elapsedMs: number; affectedRows: string; lastInsertId: string | null; warnings: number; results: ResultSet[]; error: AppError | null }
 export interface ExecutionReport { executionId: string; completed: number; cancelled: boolean; sessionValid: boolean; inTransaction: boolean; database: string | null; error: AppError | null }
-export type ExecutionEvent = { type: 'progress'; index: number; line: number; sql: string } | { type: 'statement'; outcome: StatementOutcome }
+export type ExecutionEvent = { type: 'progress'; index: number; line: number } | { type: 'statement'; outcome: StatementOutcome }
 export interface ObjectInfo { name: string; kind: 'table' | 'view'; engine: string | null; estimatedRows: string | null; comment: string }
 export interface FieldInfo { name: string; dataType: string; nullable: boolean; defaultValue: string | null; extra: string; comment: string }
 export interface IndexInfo { name: string; unique: boolean; columns: string[] }
@@ -24,6 +24,6 @@ export interface RowChange { kind: 'insert' | 'update' | 'delete'; original: Cel
 export interface ChangeRequest { connectionId: string; database: string; table: string; changes: RowChange[] }
 export interface ExportProgress { executionId: string; rows: number }
 export interface FileContent { name: string; content: string }
-export interface SqlTab { id: string; kind: 'sql'; connectionId: string; database: string | null; title: string; source: string; savedSource: string; fileName: string | null; sessionId: string | null; inTransaction: boolean; sessionValid: boolean; busy: boolean; executionId: string | null; outcomes: StatementOutcome[]; selectedOutcome: number; selectedResult: number; progress: string; report: ExecutionReport | null }
+export interface SqlTab { id: string; kind: 'sql'; connectionId: string; database: string | null; title: string; source: string; savedSource: string; fileName: string | null; sessionId: string | null; inTransaction: boolean; sessionValid: boolean; busy: boolean; executionId: string | null; outcomes: StatementOutcome[]; outcomeOffset: number; selectedOutcome: number; selectedResult: number; progress: string; report: ExecutionReport | null }
 export interface TableTab { id: string; kind: 'table'; connectionId: string; database: string; table: string; title: string; dirty: boolean; schemaDirty?: boolean; busy: boolean }
 export type WorkspaceTab = SqlTab | TableTab

@@ -39,6 +39,7 @@ async function mockedNative(page: Page) {
           case 'connect': return 'MySQL 8.4.0'
           case 'list_databases': return ['app']
           case 'list_objects': return [{ name: 'users', kind: 'table', engine: 'InnoDB', estimatedRows: '1000', comment: '用户表' }]
+          case 'list_columns': return fields.map((field: { name: string }) => field.name)
           case 'describe_table': return { fields, indexes, foreignKeys: [], engine: (window as any).__DBM_VIEW__ ? null : 'InnoDB', keyColumns: ['id'], editable: true, createSql }
           case 'schema_definition': {
             currentSchema(args.target)
@@ -89,7 +90,7 @@ async function mockedNative(page: Page) {
           case 'open_session': return 'session'
           case 'statement_at_cursor': return args.source
           case 'execute_script': {
-            args.events.onmessage({ type: 'progress', index: 0, line: 1, sql: args.source })
+            args.events.onmessage({ type: 'progress', index: 0, line: 1 })
             args.events.onmessage({ type: 'statement', outcome: { index: 0, sql: args.source, line: 1, elapsedMs: 2, affectedRows: '0', warnings: 0, lastInsertId: null, error: null, results: [{ columns: [columns[0], columns[0]], rows: [[{ kind: 'integer', value: '18446744073709551615' }, { kind: 'integer', value: '2' }]], totalRows: 1, truncated: false }] } })
             return { executionId: args.executionId, completed: 1, cancelled: false, sessionValid: true, inTransaction: false, database: 'app', error: null }
           }

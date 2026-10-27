@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { useDbm } from '../src/store'
+import { MAX_OUTCOMES, useDbm } from '../src/store'
 import type { ConnectionProfile, ExecutionEvent, SqlTab, StatementOutcome } from '../src/types'
 const mock = vi.hoisted(() => ({ command: vi.fn() }))
 vi.mock('../src/api', () => ({ command: mock.command, nativeAvailable: () => true, normalizeError: (error: unknown) => error, Channel: class { onmessage: (event: ExecutionEvent) => void = () => {} } }))
@@ -59,5 +59,44 @@ describe('workspace session lifecycle', () => {
     await store.execute(tab, 'CALL returns_many_sets()')
     expect(tab.outcomes[0]!.results.slice(0, 2).every(result => result.rows.length === 0)).toBe(true)
     expect(tab.outcomes[0]!.results.slice(2).every(result => result.rows.length === 1)).toBe(true)
+  })
+  it('applies execution events in batches and keeps the final status', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = setup(); store.newQuery('a'); const tab = store.activeTab as SqlTab; tab.sessionId = 'session'
+      let events!: { onmessage: (event: ExecutionEvent) => void }
+      let finish!: (report: unknown) => void
+      mock.command.mockImplementation((name: string, args: { events: typeof events }) => {
+        if (name === 'execute_script') { events = args.events; return new Promise(resolve => { finish = resolve }) }
+      })
+      const running = store.execute(tab, 'SELECT 1; SELECT 1')
+      await vi.advanceTimersByTimeAsync(0)
+      for (let index = 0; index < 2; index++) { events.onmessage({ type: 'progress', index, line: 1 }); events.onmessage({ type: 'statement', outcome: outcome() }) }
+      expect(tab.outcomes).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(50)
+      expect(tab.outcomes).toHaveLength(2); expect(tab.selectedOutcome).toBe(1); expect(tab.progress).toContain('第 2 条')
+      finish({ completed: 2, cancelled: false, sessionValid: true, inTransaction: false, database: 'database_a', error: null }); await running
+      events.onmessage({ type: 'progress', index: 1, line: 1 }); await vi.advanceTimersByTimeAsync(50)
+      expect(tab.progress).toBe('执行完成 · 2 条语句')
+    } finally { vi.useRealTimers() }
+  })
+  it('keeps the newest log entries with absolute numbering and ten previews', async () => {
+    const store = setup(); store.newQuery('a'); const tab = store.activeTab as SqlTab; tab.sessionId = 'session'
+    mock.command.mockImplementation(async (name: string, args: { events: { onmessage: (event: ExecutionEvent) => void } }) => {
+      if (name === 'execute_script') {
+        for (let index = 0; index < MAX_OUTCOMES + 200; index++) args.events.onmessage({ type: 'statement', outcome: { ...outcome(), index } })
+        return { completed: MAX_OUTCOMES + 200, cancelled: false, sessionValid: true, inTransaction: false, database: 'database_a', error: null }
+      }
+    })
+    const previews = () => tab.outcomes.filter(item => item.results[0]!.rows.length).length
+    await store.execute(tab, 'SELECT 1')
+    expect(tab.outcomes).toHaveLength(MAX_OUTCOMES); expect(tab.outcomeOffset).toBe(200)
+    expect(tab.outcomes[0]!.index).toBe(200); expect(tab.selectedOutcome).toBe(MAX_OUTCOMES - 1)
+    expect(previews()).toBe(10); expect(tab.outcomes.slice(-10).every(item => item.results[0]!.rows.length === 1)).toBe(true)
+    // The second run evicts previews whose log entries were already trimmed.
+    await store.execute(tab, 'SELECT 1')
+    expect(tab.outcomeOffset).toBe(2 * (MAX_OUTCOMES + 200) - MAX_OUTCOMES); expect(previews()).toBe(10)
+    store.clearResults(tab)
+    expect(tab.outcomes).toHaveLength(0); expect(tab.outcomeOffset).toBe(0)
   })
 })

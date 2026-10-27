@@ -138,23 +138,47 @@ pub async fn describe(conn: &mut Conn, database: &str, table: &str) -> Result<Ta
     describe_with(conn, database, table).await
 }
 
-async fn describe_with<Q: Queryable>(
+/// Columns and the stable row key: what paging, sorting, filtering, and export
+/// need. Read fresh for every request, in two lookups instead of describe's six.
+pub struct TableShape {
+    pub fields: Vec<FieldInfo>,
+    pub key_columns: Vec<String>,
+}
+
+pub async fn shape(conn: &mut Conn, database: &str, table: &str) -> Result<TableShape> {
+    let fields = fields_of(conn, database, table).await?;
+    if fields.is_empty() {
+        return Err(not_found());
+    }
+    let indexes = indexes_of(conn, database, table).await?;
+    Ok(TableShape {
+        key_columns: key_columns(&fields, &indexes),
+        fields,
+    })
+}
+
+/// Field names for SQL completion.
+pub async fn column_names(conn: &mut Conn, database: &str, table: &str) -> Result<Vec<String>> {
+    let fields = fields_of(conn, database, table).await?;
+    if fields.is_empty() {
+        return Err(not_found());
+    }
+    Ok(fields.into_iter().map(|f| f.name).collect())
+}
+
+fn not_found() -> AppError {
+    AppError::new("NOT_FOUND", "表或视图不存在，或当前用户无权访问")
+}
+
+async fn fields_of<Q: Queryable>(
     conn: &mut Q,
     database: &str,
     table: &str,
-) -> Result<TableInfo> {
-    let qualified = qualified_name(database, table)?;
-    conn.query_drop("SET SESSION sql_quote_show_create = 1")
-        .await?;
-    let object: Option<(String, Option<String>)> = conn.exec_first(
-        "SELECT TABLE_TYPE,ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", (database, table),
-    ).await?;
-    let (kind, engine) =
-        object.ok_or_else(|| AppError::new("NOT_FOUND", "表或视图不存在，或当前用户无权访问"))?;
+) -> Result<Vec<FieldInfo>> {
     let fields: Vec<(String, String, String, Option<String>, String, String)> = conn.exec(
         "SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA,COLUMN_COMMENT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION", (database, table),
     ).await?;
-    let fields: Vec<FieldInfo> = fields
+    Ok(fields
         .into_iter()
         .map(
             |(name, data_type, nullable, default_value, extra, comment)| FieldInfo {
@@ -166,7 +190,14 @@ async fn describe_with<Q: Queryable>(
                 comment,
             },
         )
-        .collect();
+        .collect())
+}
+
+async fn indexes_of<Q: Queryable>(
+    conn: &mut Q,
+    database: &str,
+    table: &str,
+) -> Result<Vec<IndexInfo>> {
     let index_rows: Vec<(String, u8, Option<String>)> = conn.exec(
         "SELECT INDEX_NAME,NON_UNIQUE,COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY INDEX_NAME,SEQ_IN_INDEX", (database, table),
     ).await?;
@@ -183,7 +214,11 @@ async fn describe_with<Q: Queryable>(
             entry.unique = false;
         }
     }
-    let indexes: Vec<IndexInfo> = indexes.into_values().collect();
+    Ok(indexes.into_values().collect())
+}
+
+/// Prefer the primary key, then the narrowest unique key over NOT NULL columns.
+fn key_columns(fields: &[FieldInfo], indexes: &[IndexInfo]) -> Vec<String> {
     let mut key_candidates: Vec<&IndexInfo> = indexes
         .iter()
         .filter(|index| {
@@ -196,10 +231,27 @@ async fn describe_with<Q: Queryable>(
         })
         .collect();
     key_candidates.sort_by_key(|index| (index.name != "PRIMARY", index.columns.len(), &index.name));
-    let key_columns = key_candidates
+    key_candidates
         .first()
         .map(|i| i.columns.clone())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+async fn describe_with<Q: Queryable>(
+    conn: &mut Q,
+    database: &str,
+    table: &str,
+) -> Result<TableInfo> {
+    let qualified = qualified_name(database, table)?;
+    conn.query_drop("SET SESSION sql_quote_show_create = 1")
+        .await?;
+    let object: Option<(String, Option<String>)> = conn.exec_first(
+        "SELECT TABLE_TYPE,ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?", (database, table),
+    ).await?;
+    let (kind, engine) = object.ok_or_else(not_found)?;
+    let fields = fields_of(conn, database, table).await?;
+    let indexes = indexes_of(conn, database, table).await?;
+    let key_columns = key_columns(&fields, &indexes);
     let foreign_rows: Vec<(String, String, String, String, String)> = conn.exec(
         "SELECT CONSTRAINT_NAME,COLUMN_NAME,REFERENCED_TABLE_SCHEMA,REFERENCED_TABLE_NAME,REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME,ORDINAL_POSITION", (database, table),
     ).await?;
@@ -249,8 +301,8 @@ fn qualified_name(database: &str, table: &str) -> Result<String> {
     ))
 }
 
-fn field<'a>(info: &'a TableInfo, name: &str) -> Result<&'a FieldInfo> {
-    info.fields.iter().find(|f| f.name == name).ok_or_else(|| {
+fn field<'a>(fields: &'a [FieldInfo], name: &str) -> Result<&'a FieldInfo> {
+    fields.iter().find(|f| f.name == name).ok_or_else(|| {
         AppError::new(
             "INVALID_COLUMN",
             format!("字段 {name} 不存在，请刷新表结构"),
@@ -271,18 +323,18 @@ fn page_size(request: &PageRequest) -> Result<u32> {
 }
 
 pub fn table_query(
-    info: &TableInfo,
+    shape: &TableShape,
     request: &PageRequest,
     paginate: bool,
 ) -> Result<(String, Vec<Value>)> {
     let table = qualified_name(&request.database, &request.table)?;
-    if info.fields.is_empty() {
+    if shape.fields.is_empty() {
         return Err(AppError::new("METADATA", "表中没有可读取的字段"));
     }
     if request.filters.len() > 100 {
         return Err(AppError::new("INVALID_FILTER", "最多允许 100 个筛选条件"));
     }
-    let columns = info
+    let columns = shape
         .fields
         .iter()
         .map(|f| quote_identifier(&f.name))
@@ -292,7 +344,7 @@ pub fn table_query(
     let mut params = Vec::new();
     let mut clauses = Vec::new();
     for filter in &request.filters {
-        field(info, &filter.column)?;
+        field(&shape.fields, &filter.column)?;
         let column = quote_identifier(&filter.column)?;
         let clause = match filter.operator.as_str() {
             "isNull" => format!("{column} IS NULL"),
@@ -353,15 +405,15 @@ pub fn table_query(
     }
     let mut order = Vec::new();
     if let Some(sort) = &request.sort_column {
-        field(info, sort)?;
+        field(&shape.fields, sort)?;
         order.push(format!(
             "{} {}",
             quote_identifier(sort)?,
             if request.sort_desc { "DESC" } else { "ASC" }
         ));
     }
-    for key in &info.key_columns {
-        field(info, key)?;
+    for key in &shape.key_columns {
+        field(&shape.fields, key)?;
         if request.sort_column.as_ref() != Some(key) {
             order.push(format!("{} ASC", quote_identifier(key)?));
         }
@@ -385,8 +437,8 @@ pub fn table_query(
 
 pub async fn page(conn: &mut Conn, request: &PageRequest) -> Result<PageResult> {
     let size = page_size(request)? as usize;
-    let info = describe(conn, &request.database, &request.table).await?;
-    let (sql, params) = table_query(&info, request, true)?;
+    let shape = shape(conn, &request.database, &request.table).await?;
+    let (sql, params) = table_query(&shape, request, true)?;
     let mut query = conn.exec_iter(sql, params).await?;
     let columns = query.columns_ref().to_vec();
     let mut rows = Vec::with_capacity(size.min(200));
@@ -859,6 +911,13 @@ mod tests {
             editable: true,
         }
     }
+    fn shape() -> TableShape {
+        let info = info();
+        TableShape {
+            fields: info.fields,
+            key_columns: info.key_columns,
+        }
+    }
     fn request() -> PageRequest {
         PageRequest {
             connection_id: "test".into(),
@@ -870,6 +929,31 @@ mod tests {
             sort_desc: false,
             filters: vec![],
         }
+    }
+
+    #[test]
+    fn row_key_prefers_primary_then_narrowest_not_null_unique() {
+        let mut fields = info().fields;
+        let index = |name: &str, unique: bool, columns: &[&str]| IndexInfo {
+            name: name.into(),
+            unique,
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+        };
+        // `na``me` is nullable, so only the unique index on `id` qualifies.
+        let mut indexes = vec![
+            index("wide", true, &["id", "na`me"]),
+            index("plain", false, &["id"]),
+            index("nullable", true, &["na`me"]),
+            index("narrow", true, &["id"]),
+        ];
+        assert_eq!(key_columns(&fields, &indexes), ["id"]);
+        indexes.retain(|index| index.name != "narrow");
+        assert!(key_columns(&fields, &indexes).is_empty());
+        // With both columns NOT NULL, PRIMARY wins over a narrower unique key.
+        fields[1].nullable = false;
+        indexes.push(index("narrow", true, &["id"]));
+        indexes.push(index("PRIMARY", true, &["id", "na`me"]));
+        assert_eq!(key_columns(&fields, &indexes), ["id", "na`me"]);
     }
 
     #[test]
@@ -887,7 +971,7 @@ mod tests {
     #[test]
     fn pagination_has_stable_order_and_bounded_offset() {
         let mut req = request();
-        let (sql, params) = table_query(&info(), &req, true).unwrap();
+        let (sql, params) = table_query(&shape(), &req, true).unwrap();
         assert_eq!(
             sql,
             "SELECT `id`,`na``me` FROM `a``b`.`t` ORDER BY `id` ASC LIMIT ? OFFSET ?"
@@ -895,15 +979,15 @@ mod tests {
         assert_eq!(params, vec![Value::UInt(201), Value::UInt(400)]);
         req.sort_column = Some("na`me".into());
         req.sort_desc = true;
-        assert!(table_query(&info(), &req, true)
+        assert!(table_query(&shape(), &req, true)
             .unwrap()
             .0
             .contains("ORDER BY `na``me` DESC,`id` ASC"));
         req.page_size = 5001;
-        assert!(table_query(&info(), &req, true).is_err());
+        assert!(table_query(&shape(), &req, true).is_err());
         req.page_size = 200;
         req.page = u64::MAX;
-        assert!(table_query(&info(), &req, true).is_err());
+        assert!(table_query(&shape(), &req, true).is_err());
     }
 
     #[test]
@@ -914,7 +998,7 @@ mod tests {
             operator: "contains".into(),
             value: Some(CellValue::Text("50%_!';drop table t".into())),
         });
-        let (sql, params) = table_query(&info(), &req, false).unwrap();
+        let (sql, params) = table_query(&shape(), &req, false).unwrap();
         assert!(sql.contains("`na``me` LIKE ? ESCAPE '!'"));
         assert!(!sql.contains("drop table"));
         assert_eq!(
@@ -922,10 +1006,10 @@ mod tests {
             vec![Value::Bytes(b"%50!%!_!!';drop table t%".to_vec())]
         );
         req.filters[0].operator = "= ? OR 1=1".into();
-        assert!(table_query(&info(), &req, false).is_err());
+        assert!(table_query(&shape(), &req, false).is_err());
         req.filters[0].operator = "eq".into();
         req.filters[0].column = "missing".into();
-        assert!(table_query(&info(), &req, false).is_err());
+        assert!(table_query(&shape(), &req, false).is_err());
     }
 
     #[test]
@@ -936,11 +1020,11 @@ mod tests {
             operator: "eq".into(),
             value: Some(CellValue::Null),
         });
-        let (sql, params) = table_query(&info(), &req, false).unwrap();
+        let (sql, params) = table_query(&shape(), &req, false).unwrap();
         assert!(sql.contains("`na``me` IS NULL"));
         assert!(params.is_empty());
         req.filters[0].operator = "gt".into();
-        assert!(table_query(&info(), &req, false).is_err());
+        assert!(table_query(&shape(), &req, false).is_err());
     }
 
     #[test]

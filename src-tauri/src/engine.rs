@@ -1,7 +1,7 @@
 use crate::{
     database,
     model::*,
-    script::{self, SqlMode},
+    script::{self, Cursor, SqlMode},
     state::Execution,
 };
 use mysql_async::{consts::StatusFlags, prelude::Queryable, Conn};
@@ -21,14 +21,17 @@ pub async fn snapshot(conn: &mut Conn) -> Result<SessionSnapshot> {
         .query_first("SELECT DATABASE(), @@SESSION.sql_mode")
         .await?
         .ok_or_else(|| AppError::new("CONNECTION", "无法读取数据库会话状态"))?;
-    let in_transaction = conn.last_ok_packet().is_some_and(|p| {
-        p.status_flags()
-            .contains(StatusFlags::SERVER_STATUS_IN_TRANS)
-    });
     Ok(SessionSnapshot {
         database,
         mode: SqlMode::parse(&mode),
-        in_transaction,
+        in_transaction: in_transaction(conn),
+    })
+}
+/// Status flags from the last OK packet, including a result-set terminator.
+fn in_transaction(conn: &Conn) -> bool {
+    conn.last_ok_packet().is_some_and(|p| {
+        p.status_flags()
+            .contains(StatusFlags::SERVER_STATUS_IN_TRANS)
     })
 }
 
@@ -105,7 +108,7 @@ pub async fn execute<F: FnMut(ExecutionEvent)>(
     }
     let initial = snapshot(conn).await?;
     script::preflight(source, initial.mode)?;
-    if script::next_statement(source, 0, initial.mode)?.is_none() {
+    if script::next_statement(source, Cursor::START, initial.mode)?.is_none() {
         return Err(AppError::new("EMPTY_SQL", "没有可执行的 SQL。"));
     }
     let mut state = initial;
@@ -118,14 +121,14 @@ pub async fn execute<F: FnMut(ExecutionEvent)>(
         database: state.database.clone(),
         error: None,
     };
-    let mut offset = 0;
+    let mut from = Cursor::START;
     let mut index = 0;
     loop {
         if execution.is_cancelled() {
             report.cancelled = true;
             break;
         }
-        let statement = match script::next_statement(source, offset, state.mode) {
+        let statement = match script::next_statement(source, from, state.mode) {
             Ok(Some(s)) => s,
             Ok(None) => break,
             Err(e) => {
@@ -143,10 +146,10 @@ pub async fn execute<F: FnMut(ExecutionEvent)>(
             }
             *current = Some(conn.id());
         }
+        let session_may_change = script::may_change_session(&statement.sql);
         on_event(ExecutionEvent::Progress {
             index,
             line: statement.line,
-            sql: statement.sql.clone(),
         });
         let start = Instant::now();
         let mut consumed = if execution.is_cancelled() {
@@ -194,8 +197,18 @@ pub async fn execute<F: FnMut(ExecutionEvent)>(
                 report.error = Some(e);
             }
         }
-        on_event(ExecutionEvent::Statement { outcome });
-        if report.session_valid {
+        on_event(ExecutionEvent::Statement {
+            outcome: Box::new(outcome),
+        });
+        if report.session_valid
+            && report.error.is_none()
+            && !execution.is_cancelled()
+            && !session_may_change
+        {
+            // Database and sql_mode are unchanged; skip a round trip per statement.
+            state.in_transaction = in_transaction(conn);
+            report.in_transaction = state.in_transaction;
+        } else if report.session_valid {
             match timeout(Duration::from_secs(5), snapshot(conn)).await {
                 Ok(Ok(next)) => {
                     state = next;
@@ -214,7 +227,7 @@ pub async fn execute<F: FnMut(ExecutionEvent)>(
             report.cancelled |= execution.is_cancelled();
             break;
         }
-        offset = statement.next;
+        from = statement.next;
         index += 1;
     }
     Ok(report)

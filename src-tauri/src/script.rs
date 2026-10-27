@@ -13,13 +13,23 @@ impl SqlMode {
         }
     }
 }
+/// A UTF-8 byte offset and its 1-based line. Lines are counted forward from the
+/// previous cursor so splitting a long script stays linear.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Cursor {
+    pub offset: usize,
+    pub line: usize,
+}
+impl Cursor {
+    pub const START: Self = Self { offset: 0, line: 1 };
+}
 #[derive(Debug)]
 pub struct Statement {
     pub sql: String,
     pub line: usize,
     pub start: usize,
     pub end: usize,
-    pub next: usize,
+    pub next: Cursor,
 }
 #[derive(Clone, Copy, PartialEq)]
 enum ScanState {
@@ -30,11 +40,11 @@ enum ScanState {
 }
 
 /// MySQL lexical splitter. Offsets are UTF-8 byte offsets internally, never JS offsets.
-pub fn next_statement(source: &str, offset: usize, mode: SqlMode) -> Result<Option<Statement>> {
+pub fn next_statement(source: &str, from: Cursor, mode: SqlMode) -> Result<Option<Statement>> {
     let bytes = source.as_bytes();
-    let mut i = offset;
+    let mut i = from.offset;
     let mut state = ScanState::Normal;
-    let mut start = offset;
+    let mut start = from.offset;
     let mut has_code = false;
     while i < bytes.len() {
         let b = bytes[i];
@@ -42,7 +52,7 @@ pub fn next_statement(source: &str, offset: usize, mode: SqlMode) -> Result<Opti
             ScanState::Normal => {
                 if b == b';' {
                     if has_code {
-                        return make_statement(source, start, i, i + 1);
+                        return make_statement(source, from, start, i, i + 1);
                     }
                     start = i + 1;
                 } else if b == b'#'
@@ -71,7 +81,7 @@ pub fn next_statement(source: &str, offset: usize, mode: SqlMode) -> Result<Opti
                             .map_or(bytes.len(), |n| i + n);
                         if source[i..end].eq_ignore_ascii_case("delimiter") {
                             let mut error = AppError::new("UNSUPPORTED_DELIMITER", "第一版不支持 DELIMITER / 存储程序定义，请使用 MySQL 客户端执行此脚本。");
-                            error.line = Some(line_at(source, i));
+                            error.line = Some(line_from(source, from, i));
                             return Err(error);
                         }
                     }
@@ -108,17 +118,18 @@ pub fn next_statement(source: &str, offset: usize, mode: SqlMode) -> Result<Opti
     }
     if matches!(state, ScanState::Quote(_) | ScanState::BlockComment) {
         let mut error = AppError::new("SQL_PARSE", "SQL 中存在未闭合的引号或块注释。");
-        error.line = Some(line_at(source, start));
+        error.line = Some(line_from(source, from, start));
         return Err(error);
     }
     if has_code {
-        make_statement(source, start, bytes.len(), bytes.len())
+        make_statement(source, from, start, bytes.len(), bytes.len())
     } else {
         Ok(None)
     }
 }
 fn make_statement(
     source: &str,
+    from: Cursor,
     start: usize,
     end: usize,
     next: usize,
@@ -126,16 +137,31 @@ fn make_statement(
     let text = &source[start..end];
     let trim = text.len() - text.trim_start().len();
     let start = start + trim;
+    let line = line_from(source, from, start);
     Ok(Some(Statement {
         sql: source[start..end].trim_end().into(),
-        line: line_at(source, start),
+        line,
         start,
         end,
-        next,
+        next: Cursor {
+            offset: next,
+            line: line_from(
+                source,
+                Cursor {
+                    offset: start,
+                    line,
+                },
+                next,
+            ),
+        },
     }))
 }
-fn line_at(source: &str, at: usize) -> usize {
-    source[..at].bytes().filter(|b| *b == b'\n').count() + 1
+fn line_from(source: &str, from: Cursor, at: usize) -> usize {
+    from.line
+        + source.as_bytes()[from.offset..at]
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count()
 }
 
 /// Check DELIMITER before sending any SQL. SET expressions may compute sql_mode
@@ -143,19 +169,19 @@ fn line_at(source: &str, at: usize) -> usize {
 /// The actual execution always splits using the freshly read server mode.
 pub fn preflight(source: &str, mode: SqlMode) -> Result<()> {
     let bits = u8::from(mode.no_backslash_escapes) | (u8::from(mode.ansi_quotes) << 1);
-    let mut pending = vec![(0, bits)];
+    let mut pending = vec![(Cursor::START, bits)];
     let mut visited = std::collections::HashSet::new();
     let mut complete = false;
     let mut parse_error = None;
-    while let Some((offset, bits)) = pending.pop() {
-        if !visited.insert((offset, bits)) {
+    while let Some((from, bits)) = pending.pop() {
+        if !visited.insert((from, bits)) {
             continue;
         }
         let mode = SqlMode {
             no_backslash_escapes: bits & 1 != 0,
             ansi_quotes: bits & 2 != 0,
         };
-        match next_statement(source, offset, mode) {
+        match next_statement(source, from, mode) {
             Ok(Some(statement)) => {
                 if may_set_mode(&statement.sql) {
                     for mode in 0..4 {
@@ -176,11 +202,30 @@ pub fn preflight(source: &str, mode: SqlMode) -> Result<()> {
         Err(parse_error.unwrap_or_else(|| AppError::new("SQL_PARSE", "无法解析脚本")))
     }
 }
+/// Statements that may change the lexical mode for the rest of the script,
+/// including a prepared SET run through EXECUTE.
 fn may_set_mode(sql: &str) -> bool {
+    first_word(sql).is_none_or(|word| {
+        ["SET", "CALL", "EXECUTE"]
+            .iter()
+            .any(|keyword| word.eq_ignore_ascii_case(keyword))
+    })
+}
+/// Statements after which DATABASE() or sql_mode may differ. Transaction state
+/// does not need this: every statement's final OK packet reports it.
+pub fn may_change_session(sql: &str) -> bool {
+    may_set_mode(sql)
+        || first_word(sql).is_some_and(|word| {
+            word.eq_ignore_ascii_case("USE") || word.eq_ignore_ascii_case("DROP")
+        })
+}
+/// The first keyword after ordinary comments; None for an executable version
+/// comment, which may contain any statement.
+fn first_word(sql: &str) -> Option<&str> {
     let mut text = sql.trim_start();
     loop {
         if text.starts_with("/*!") {
-            return true;
+            return None;
         }
         if text.starts_with("/*") {
             if let Some(end) = text.find("*/") {
@@ -201,11 +246,7 @@ fn may_set_mode(sql: &str) -> bool {
         }
         break;
     }
-    let word = text
-        .split(|c: char| !c.is_ascii_alphabetic())
-        .next()
-        .unwrap_or("");
-    word.eq_ignore_ascii_case("SET") || word.eq_ignore_ascii_case("CALL")
+    text.split(|c: char| !c.is_ascii_alphabetic()).next()
 }
 pub fn at_cursor(source: &str, cursor_utf16: usize, mode: SqlMode) -> Result<String> {
     let mut units = 0;
@@ -220,13 +261,13 @@ pub fn at_cursor(source: &str, cursor_utf16: usize, mode: SqlMode) -> Result<Str
             }
         })
         .unwrap_or(source.len());
-    let mut offset = 0;
+    let mut from = Cursor::START;
     let mut last = None;
-    while let Some(stmt) = next_statement(source, offset, mode)? {
-        if cursor <= stmt.end || (cursor >= stmt.start && cursor < stmt.next) {
+    while let Some(stmt) = next_statement(source, from, mode)? {
+        if cursor <= stmt.end || (cursor >= stmt.start && cursor < stmt.next.offset) {
             return Ok(stmt.sql);
         }
-        offset = stmt.next;
+        from = stmt.next;
         last = Some(stmt.sql);
     }
     last.ok_or_else(|| AppError::new("EMPTY_SQL", "请先输入 SQL。"))
@@ -237,9 +278,9 @@ mod tests {
     use super::*;
     fn split(s: &str, mode: SqlMode) -> Vec<String> {
         let mut out = Vec::new();
-        let mut offset = 0;
-        while let Some(stmt) = next_statement(s, offset, mode).unwrap() {
-            offset = stmt.next;
+        let mut from = Cursor::START;
+        while let Some(stmt) = next_statement(s, from, mode).unwrap() {
+            from = stmt.next;
             out.push(stmt.sql);
         }
         out
@@ -273,7 +314,9 @@ mod tests {
             .len(),
             2
         );
-        assert!(next_statement("SELECT 'a\\'; SELECT 2", 0, SqlMode::default()).is_err());
+        assert!(
+            next_statement("SELECT 'a\\'; SELECT 2", Cursor::START, SqlMode::default()).is_err()
+        );
         assert_eq!(
             split(
                 "SELECT \"a\\\"; SELECT 2",
@@ -312,13 +355,13 @@ mod tests {
             split("/*!80000 SET @x=1 */; SELECT @x", SqlMode::default()).len(),
             2
         );
-        assert!(next_statement("SELECT 'abc", 0, SqlMode::default()).is_err());
-        assert!(next_statement("SELECT 1 /*", 0, SqlMode::default()).is_err());
+        assert!(next_statement("SELECT 'abc", Cursor::START, SqlMode::default()).is_err());
+        assert!(next_statement("SELECT 1 /*", Cursor::START, SqlMode::default()).is_err());
     }
     #[test]
     fn cursor_and_source_lines() {
         let source = "SELECT 1;\n\nSELECT 2;";
-        let a = next_statement(source, 0, SqlMode::default())
+        let a = next_statement(source, Cursor::START, SqlMode::default())
             .unwrap()
             .unwrap();
         let b = next_statement(source, a.next, SqlMode::default())
@@ -329,5 +372,60 @@ mod tests {
             at_cursor(source, 12, SqlMode::default()).unwrap(),
             "SELECT 2"
         );
+    }
+    #[test]
+    fn incremental_lines_match_absolute_lines() {
+        let source = "-- head\n\n;;SELECT 'a\nb';\n/* x\ny */ SELECT 2; # tail\n\nSELECT\n3\n;  \n\nSELECT \"q\\\"\n\"";
+        let mut from = Cursor::START;
+        let mut count = 0;
+        while let Some(stmt) = next_statement(source, from, SqlMode::default()).unwrap() {
+            let absolute = source[..stmt.start].matches('\n').count() + 1;
+            assert_eq!(stmt.line, absolute, "{}", stmt.sql);
+            assert_eq!(
+                stmt.next.line,
+                source[..stmt.next.offset].matches('\n').count() + 1
+            );
+            from = stmt.next;
+            count += 1;
+        }
+        assert_eq!(count, 4);
+        // Errors found after resuming mid-script still report absolute lines.
+        let after_first = Cursor { offset: 9, line: 1 };
+        let e = next_statement(
+            "SELECT 1;\n;\nSELECT 'open",
+            after_first,
+            SqlMode::default(),
+        )
+        .unwrap_err();
+        assert_eq!(e.line, Some(2));
+        let e = next_statement("SELECT 1;\n\nDELIMITER $$", after_first, SqlMode::default())
+            .unwrap_err();
+        assert_eq!(e.line, Some(3));
+    }
+    #[test]
+    fn session_changes_require_a_fresh_snapshot() {
+        for sql in [
+            "USE app",
+            "use `a b`",
+            "SET sql_mode = 'ANSI_QUOTES'",
+            "/* note */ SET NAMES utf8mb4",
+            "-- note\nCALL p()",
+            "EXECUTE stmt",
+            "DROP DATABASE app",
+            "/*!40101 SET @x = 1 */",
+        ] {
+            assert!(may_change_session(sql), "{sql}");
+        }
+        for sql in [
+            "SELECT 1",
+            "INSERT INTO users VALUES (1)",
+            "-- USE app\nSELECT 1",
+            "/* SET */ UPDATE t SET a = 1",
+            "START TRANSACTION",
+            "COMMIT",
+            "(SELECT 1)",
+        ] {
+            assert!(!may_change_session(sql), "{sql}");
+        }
     }
 }

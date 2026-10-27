@@ -84,7 +84,7 @@ async fn run(
         execution,
         |event| {
             if let ExecutionEvent::Statement { outcome } = event {
-                outcomes.push(outcome);
+                outcomes.push(*outcome);
             }
         },
     )

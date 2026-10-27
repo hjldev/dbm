@@ -1,9 +1,12 @@
 import { computed, ref, shallowReactive, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 import { Channel, command, nativeAvailable, normalizeError } from './api'
-import type { BootstrapData, ConnectionProfile, ExecutionEvent, ExecutionReport, ObjectInfo, Settings, SqlTab, WorkspaceTab } from './types'
+import type { BootstrapData, ConnectionProfile, ExecutionEvent, ExecutionReport, ObjectInfo, Settings, SqlTab, StatementOutcome, WorkspaceTab } from './types'
 
 interface ConfirmDialog { title: string; message: string; action: string; danger: boolean; resolve: (answer: boolean) => void }
+// The execution log keeps the newest statements; outcomeOffset counts those trimmed before them.
+export const MAX_OUTCOMES = 1000
+const EVENT_BATCH_MS = 50
 export const useDbm = defineStore('dbm', () => {
   const connections = ref<ConnectionProfile[]>([])
   const settings = ref<Settings>({ theme: 'system', previewLimit: 1000, sidebarWidth: 250 })
@@ -24,6 +27,7 @@ export const useDbm = defineStore('dbm', () => {
   const ready = ref(false)
   const activeTab = computed(() => tabs.value.find(tab => tab.id === activeTabId.value) ?? null)
   const activeProfile = computed(() => connections.value.find(profile => profile.id === (activeTab.value?.connectionId ?? selectedConnection.value)) ?? null)
+  // outcomeIndex counts from the tab's first statement, including entries trimmed from the log.
   const recentResults: { tabId: string; outcomeIndex: number; resultIndex: number }[] = []
   let queryNumber = 0
 
@@ -86,7 +90,7 @@ export const useDbm = defineStore('dbm', () => {
   function newQuery(connectionId = activeProfile.value?.id, database?: string | null) {
     if (!connectionId || !connected.value[connectionId]) { notify('请先连接一个 MySQL 数据库', true); return }
     const initialDatabase = database !== undefined ? database : selectedConnection.value === connectionId ? selectedDatabase.value : activeTab.value?.connectionId === connectionId ? activeTab.value.database : connections.value.find(profile => profile.id === connectionId)?.database ?? null
-    const tab: SqlTab = shallowReactive({ id: crypto.randomUUID(), kind: 'sql', connectionId, database: initialDatabase, title: `查询 ${++queryNumber}`, source: '', savedSource: '', fileName: null, sessionId: null, inTransaction: false, sessionValid: true, busy: false, executionId: null, outcomes: [], selectedOutcome: 0, selectedResult: 0, progress: '', report: null })
+    const tab: SqlTab = shallowReactive({ id: crypto.randomUUID(), kind: 'sql', connectionId, database: initialDatabase, title: `查询 ${++queryNumber}`, source: '', savedSource: '', fileName: null, sessionId: null, inTransaction: false, sessionValid: true, busy: false, executionId: null, outcomes: [], outcomeOffset: 0, selectedOutcome: 0, selectedResult: 0, progress: '', report: null })
     tabs.value = [...tabs.value, tab]; activeTabId.value = tab.id
   }
   function openTable(connectionId: string, database: string, table: string) {
@@ -101,41 +105,58 @@ export const useDbm = defineStore('dbm', () => {
     return tab.sessionId
   }
   function trimPreviews(tab: SqlTab, index: number) {
-    for (let resultIndex = 0; resultIndex < tab.outcomes[index]!.results.length; resultIndex++) recentResults.push({ tabId: tab.id, outcomeIndex: index, resultIndex })
+    for (let resultIndex = 0; resultIndex < tab.outcomes[index - tab.outcomeOffset]!.results.length; resultIndex++) recentResults.push({ tabId: tab.id, outcomeIndex: index, resultIndex })
     while (recentResults.length > 10) {
       const oldest = recentResults.shift()!
       const target = tabs.value.find(item => item.id === oldest.tabId)
       if (target?.kind !== 'sql') continue
-      target.outcomes = target.outcomes.map((outcome, i) => i === oldest.outcomeIndex ? { ...outcome, results: outcome.results.map((result, resultIndex) => resultIndex === oldest.resultIndex ? { ...result, rows: [], truncated: result.totalRows > 0 } : result) } : outcome)
+      const position = oldest.outcomeIndex - target.outcomeOffset
+      if (position < 0) continue
+      target.outcomes = target.outcomes.map((outcome, i) => i === position ? { ...outcome, results: outcome.results.map((result, resultIndex) => resultIndex === oldest.resultIndex ? { ...result, rows: [], truncated: result.totalRows > 0 } : result) } : outcome)
     }
+  }
+  function appendOutcomes(tab: SqlTab, batch: StatementOutcome[]) {
+    const first = tab.outcomeOffset + tab.outcomes.length
+    const merged = tab.outcomes.concat(batch)
+    const dropped = Math.max(0, merged.length - MAX_OUTCOMES)
+    tab.outcomeOffset += dropped; tab.outcomes = dropped ? merged.slice(dropped) : merged
+    tab.selectedOutcome = tab.outcomes.length - 1; tab.selectedResult = 0
+    batch.forEach((outcome, i) => { if (outcome.results.length && first + i >= tab.outcomeOffset) trimPreviews(tab, first + i) })
   }
   async function execute(tab: SqlTab, source: string) {
     if (tab.busy || !source.trim()) return
     tab.busy = true; tab.progress = '正在准备会话…'; tab.report = null
+    // Statements can finish much faster than the UI repaints; apply their events in batches.
+    let pending: StatementOutcome[] = []
+    let progress: string | null = null
+    let finished = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const flush = () => {
+      clearTimeout(timer); timer = undefined
+      if (progress !== null) { tab.progress = progress; progress = null }
+      if (pending.length) { appendOutcomes(tab, pending); pending = [] }
+    }
     try {
       const sessionId = await ensureSession(tab)
       tab.executionId = crypto.randomUUID()
       const events = new Channel<ExecutionEvent>()
       events.onmessage = event => {
-        if (event.type === 'progress') tab.progress = `正在执行第 ${event.index + 1} 条语句 · 行 ${event.line}`
-        else {
-          const index = tab.outcomes.length
-          tab.outcomes = [...tab.outcomes, event.outcome]
-          tab.selectedOutcome = index; tab.selectedResult = 0
-          if (event.outcome.results.length) trimPreviews(tab, index)
-        }
+        if (event.type === 'statement') pending.push(event.outcome)
+        else if (!finished) progress = `正在执行第 ${event.index + 1} 条语句 · 行 ${event.line}`
+        timer ??= setTimeout(flush, EVENT_BATCH_MS)
       }
       const report = await command<ExecutionReport>('execute_script', { sessionId, executionId: tab.executionId, source, previewLimit: settings.value.previewLimit, events })
+      finished = true; flush()
       tab.report = report; tab.inTransaction = report.inTransaction; tab.sessionValid = report.sessionValid; tab.database = report.database
       if (report.error) showError(report.error)
       tab.progress = report.cancelled ? '已取消执行' : report.error ? '遇到错误，后续语句未执行' : `执行完成 · ${report.completed} 条语句`
-    } catch (error) { const issue = normalizeError(error); if (['SESSION_LOST', 'CONNECTION', 'SESSION_INVALID'].includes(issue.code)) tab.sessionValid = false; showError(error); tab.progress = '执行失败' }
+    } catch (error) { finished = true; flush(); const issue = normalizeError(error); if (['SESSION_LOST', 'CONNECTION', 'SESSION_INVALID'].includes(issue.code)) tab.sessionValid = false; showError(error); tab.progress = '执行失败' }
     finally { tab.busy = false; tab.executionId = null }
   }
   async function cancel(executionId: string | null) { if (!executionId) return; try { await command('cancel_execution', { executionId }) } catch (error) { showError(error) } }
   function clearResults(tab: SqlTab) {
     if (tab.busy) return
-    tab.outcomes = []; tab.selectedOutcome = 0; tab.selectedResult = 0; tab.report = null; tab.progress = ''
+    tab.outcomes = []; tab.outcomeOffset = 0; tab.selectedOutcome = 0; tab.selectedResult = 0; tab.report = null; tab.progress = ''
     for (let i = recentResults.length - 1; i >= 0; i--) if (recentResults[i]!.tabId === tab.id) recentResults.splice(i, 1)
   }
   async function canDiscard(tab: WorkspaceTab) {

@@ -175,14 +175,8 @@ pub struct ExecutionReport {
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ExecutionEvent {
-    Statement {
-        outcome: StatementOutcome,
-    },
-    Progress {
-        index: usize,
-        line: usize,
-        sql: String,
-    },
+    Statement { outcome: Box<StatementOutcome> },
+    Progress { index: usize, line: usize },
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

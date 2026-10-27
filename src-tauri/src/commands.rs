@@ -235,6 +235,20 @@ pub async fn describe_table(
     )
     .await
 }
+#[tauri::command]
+pub async fn list_columns(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+    table: String,
+) -> Result<Vec<String>> {
+    database::column_names(
+        &mut pooled(&state, &connection_id).await?,
+        &database,
+        &table,
+    )
+    .await
+}
 
 #[tauri::command]
 pub async fn schema_definition(
@@ -552,8 +566,8 @@ pub async fn export_table(
     // Export owns a dedicated connection so a forced cancel cannot poison a pool.
     let options = database::options(&profile, &password, Some(&request.database))?;
     let mut conn = database::new_connection(options.clone()).await?;
-    let info = database::describe(&mut conn, &request.database, &request.table).await?;
-    let (sql, params) = database::table_query(&info, &request, false)?;
+    let shape = database::shape(&mut conn, &request.database, &request.table).await?;
+    let (sql, params) = database::table_query(&shape, &request, false)?;
     let mut file = tempfile::NamedTempFile::new_in(
         path.parent()
             .ok_or_else(|| AppError::new("IO", "无效导出路径"))?,

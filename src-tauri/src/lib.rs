@@ -30,6 +30,7 @@ pub fn run() {
             commands::list_databases,
             commands::list_objects,
             commands::describe_table,
+            commands::list_columns,
             commands::schema_definition,
             commands::preview_schema_change,
             commands::apply_schema_change,
